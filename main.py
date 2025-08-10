@@ -1,24 +1,23 @@
+import os
 import re
 import aiohttp
 import asyncio
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message
-import subprocess
-import os
 import sys
 
-API_ID = int(os.getenv("API_ID", "0"))
+API_ID = int(os.getenv("API_ID", "0"))  # আপনার API_ID দিন environment variables এ
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", ""))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # আপনার টেলিগ্রাম আইডি
 
 TMP = Path("./tmp")
 TMP.mkdir(exist_ok=True, parents=True)
 
 app = Client("auto_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
 
 def generate_thumbnail(video_path: Path, thumb_path: Path) -> bool:
     try:
@@ -34,144 +33,124 @@ def generate_thumbnail(video_path: Path, thumb_path: Path) -> bool:
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         return thumb_path.exists() and thumb_path.stat().st_size > 0
     except Exception as e:
-        print(f"Thumbnail generation error: {e}", file=sys.stderr)
+        print(f"Thumbnail error: {e}", file=sys.stderr)
         return False
 
-
-async def download_url(url: str, dest: Path, progress_message: Message = None):
+async def download_file(url: str, dest: Path, progress_msg: Message = None):
     try:
         timeout = aiohttp.ClientTimeout(total=3600)
         headers = {"User-Agent": "Mozilla/5.0"}
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             async with session.get(url) as resp:
                 if resp.status != 200:
-                    raise Exception(f"HTTP error: {resp.status}")
-                total_size = int(resp.headers.get("Content-Length", 0))
-                chunk_size = 256 * 1024
+                    raise Exception(f"HTTP {resp.status}")
+                total = int(resp.headers.get("Content-Length", 0))
                 downloaded = 0
+                chunk_size = 256 * 1024
                 with dest.open("wb") as f:
                     async for chunk in resp.content.iter_chunked(chunk_size):
                         if not chunk:
                             break
                         f.write(chunk)
                         downloaded += len(chunk)
-                        if progress_message and total_size > 0:
-                            percent = downloaded * 100 / total_size
-                            await progress_message.edit(f"ডাউনলোড হচ্ছে: {percent:.2f}%")
+                        if progress_msg and total:
+                            percent = downloaded * 100 / total
+                            await progress_msg.edit(f"Downloading... {percent:.2f}%")
         return True, None
     except Exception as e:
         return False, str(e)
 
+def is_video_file(filename: str) -> bool:
+    video_exts = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm"}
+    return any(filename.lower().endswith(ext) for ext in video_exts)
 
-@app.on_message(filters.private & filters.user(ADMIN_ID) & filters.regex(r"https?://"))
-async def auto_url_upload(client: Client, message: Message):
-    url_match = re.search(r"https?://[^\s]+", message.text)
-    if not url_match:
+@app.on_message(filters.private & filters.regex(r"https?://"))
+async def url_auto_upload(client: Client, message: Message):
+    if message.from_user.id != ADMIN_ID:
         return
-    url = url_match.group(0)
+    urls = re.findall(r"(https?://[^\s]+)", message.text)
+    if not urls:
+        return
+    url = urls[0]
 
-    fname = url.split("/")[-1].split("?")[0]
-    if not fname or len(fname) < 3:
-        fname = f"file_{int(datetime.now().timestamp())}"
-    dest_path = TMP / fname
+    filename = url.split("/")[-1].split("?")[0]
+    if not filename:
+        filename = f"file_{int(datetime.now().timestamp())}"
 
-    status_msg = await message.reply_text(f"URL পাওয়া গেছে:\n{url}\nডাউনলোড শুরু হচ্ছে...")
-    ok, err = await download_url(url, dest_path, progress_message=status_msg)
+    if not is_video_file(filename):
+        filename += ".mp4"
 
+    tmp_file = TMP / filename
+
+    status_msg = await message.reply_text("ডাউনলোড শুরু হচ্ছে...")
+    ok, err = await download_file(url, tmp_file, status_msg)
     if not ok:
         await status_msg.edit(f"ডাউনলোড ব্যর্থ: {err}")
-        if dest_path.exists():
-            dest_path.unlink(missing_ok=True)
+        if tmp_file.exists():
+            tmp_file.unlink()
         return
 
-    # Generate thumbnail if video
+    await status_msg.edit("ডাউনলোড শেষ, আপলোড শুরু হচ্ছে...")
+
     thumb_path = None
-    if dest_path.suffix.lower() in {".mp4", ".mkv", ".avi", ".mov"}:
-        thumb_tmp = TMP / f"thumb_{message.from_user.id}_{int(datetime.now().timestamp())}.jpg"
-        if generate_thumbnail(dest_path, thumb_tmp):
-            thumb_path = str(thumb_tmp)
+    if is_video_file(str(tmp_file)):
+        thumb_path_candidate = TMP / f"thumb_{int(datetime.now().timestamp())}.jpg"
+        if generate_thumbnail(tmp_file, thumb_path_candidate):
+            thumb_path = str(thumb_path_candidate)
 
     try:
-        if dest_path.suffix.lower() in {".mp4", ".mkv", ".avi", ".mov"}:
+        if is_video_file(str(tmp_file)):
             await client.send_video(
                 chat_id=message.chat.id,
-                video=str(dest_path),
-                caption=f"অটোমেটিক আপলোড: {fname}",
-                thumb=thumb_path
+                video=str(tmp_file),
+                thumb=thumb_path,
+                caption=filename
             )
         else:
             await client.send_document(
                 chat_id=message.chat.id,
-                document=str(dest_path),
-                caption=f"অটোমেটিক আপলোড: {fname}"
+                document=str(tmp_file),
+                caption=filename
             )
-        await status_msg.edit("আপলোড সম্পন্ন।")
+        await status_msg.delete()
     except Exception as e:
-        await status_msg.edit(f"আপলোড ব্যর্থ: {e}")
+        await status_msg.edit(f"আপলোডে সমস্যা: {e}")
+    finally:
+        if tmp_file.exists():
+            tmp_file.unlink()
+        if thumb_path and Path(thumb_path).exists():
+            Path(thumb_path).unlink()
 
-    # Clean up temp files
-    if dest_path.exists():
-        dest_path.unlink(missing_ok=True)
-    if thumb_path and Path(thumb_path).exists():
-        Path(thumb_path).unlink(missing_ok=True)
-
-
-@app.on_message(filters.private & filters.user(ADMIN_ID) & (filters.video | filters.document))
-async def auto_file_rename_upload(client: Client, message: Message):
-    uid = message.from_user.id
-    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # Determine extension and new filename
-    ext = ""
-    if message.video:
-        ext = (message.video.file_name or "mp4").split(".")[-1]
-    elif message.document:
-        ext = (message.document.file_name or "bin").split(".")[-1]
-    new_name = f"auto_{uid}_{now_str}.{ext}"
-
-    dest_path = TMP / new_name
-
-    status_msg = await message.reply_text("ফাইল ডাউনলোড হচ্ছে...")
-    try:
-        await message.download(file_name=str(dest_path))
-        await status_msg.edit("ডাউনলোড সম্পন্ন, আপলোড শুরু হচ্ছে...")
-    except Exception as e:
-        await status_msg.edit(f"ডাউনলোড ব্যর্থ: {e}")
-        if dest_path.exists():
-            dest_path.unlink(missing_ok=True)
+@app.on_message(filters.private & filters.video)
+async def video_auto_rename(client: Client, message: Message):
+    if message.from_user.id != ADMIN_ID:
         return
-
-    thumb_path = None
-    if ext.lower() in {"mp4", "mkv", "avi", "mov"}:
-        thumb_tmp = TMP / f"thumb_{uid}_{int(datetime.now().timestamp())}.jpg"
-        if generate_thumbnail(dest_path, thumb_tmp):
-            thumb_path = str(thumb_tmp)
+    status_msg = await message.reply_text("ভিডিও প্রসেসিং হচ্ছে...")
+    tmp_file = TMP / f"video_{int(datetime.now().timestamp())}.mp4"
 
     try:
-        if message.video:
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=str(dest_path),
-                caption=new_name,
-                thumb=thumb_path
-            )
-        else:
-            await client.send_document(
-                chat_id=message.chat.id,
-                document=str(dest_path),
-                caption=new_name
-            )
-        await status_msg.edit("অটোমেটিক আপলোড সম্পন্ন।")
+        await message.download(file_name=str(tmp_file))
+        thumb_path_candidate = TMP / f"thumb_{int(datetime.now().timestamp())}.jpg"
+        thumb_path = None
+        if generate_thumbnail(tmp_file, thumb_path_candidate):
+            thumb_path = str(thumb_path_candidate)
+        # Rename filename example: original filename + timestamp
+        new_name = f"renamed_{int(datetime.now().timestamp())}.mp4"
+        await client.send_video(
+            chat_id=message.chat.id,
+            video=str(tmp_file),
+            thumb=thumb_path,
+            caption=new_name
+        )
+        await status_msg.delete()
     except Exception as e:
-        await status_msg.edit(f"আপলোড ব্যর্থ: {e}")
-
-    # Clean up temp files
-    if dest_path.exists():
-        dest_path.unlink(missing_ok=True)
-    if thumb_path and Path(thumb_path).exists():
-        Path(thumb_path).unlink(missing_ok=True)
-
+        await status_msg.edit(f"ত্রুটি: {e}")
+    finally:
+        if tmp_file.exists():
+            tmp_file.unlink()
+        if thumb_path and Path(thumb_path).exists():
+            Path(thumb_path).unlink()
 
 if __name__ == "__main__":
-    print("Auto Telegram Bot is running...")
+    print("Bot Starting...")
     app.run()
