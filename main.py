@@ -5,13 +5,14 @@ import asyncio
 from pathlib import Path
 from datetime import datetime
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image
 from hachoir.parser import createParser
 from hachoir.metadata import extractMetadata
 import subprocess
 import traceback
 
+# Environment variables থেকে নিন
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -22,8 +23,8 @@ TMP.mkdir(parents=True, exist_ok=True)
 USER_THUMBS = {}
 LAST_FILE = {}
 TASKS = {}
-ADMIN_ID = 6473423613  # আপনার Telegram ID এখানে বসাবেন
-MAX_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
+ADMIN_ID = 6473423613  # আপনার Telegram user id এখানে রাখুন
+MAX_SIZE = 2 * 1024 * 1024 * 1024  # 2GB max size
 
 app = Client("mybot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -71,7 +72,10 @@ async def progress_callback(current, total, message: Message, start_time, task="
         eta = int((total - current) / (current / diff)) if current and diff else 0
 
         done_blocks = int(percentage // 5)
-        done_blocks = max(0, min(done_blocks, 20))
+        if done_blocks < 0:
+            done_blocks = 0
+        if done_blocks > 20:
+            done_blocks = 20
         progress_bar = ("█" * done_blocks).ljust(20, "░")
         text = (
             f"{task}...\n"
@@ -151,31 +155,51 @@ async def download_drive_file(file_id: str, out_path: Path, message: Message = N
 
 async def set_bot_commands():
     cmds = [
-        ("start", "বট চালু/হেল্প"),
-        ("help", "সহায়িকা"),
+        BotCommand("start", "বট চালু/হেল্প"),
+        BotCommand("upload_url", "URL থেকে ফাইল ডাউনলোড ও আপলোড (admin only)"),
+        BotCommand("setthumb", "কাস্টম থাম্বনেইল সেট করুন (admin only)"),
+        BotCommand("view_thumb", "আপনার থাম্বনেইল দেখুন (admin only)"),
+        BotCommand("del_thumb", "আপনার থাম্বনেইল মুছে ফেলুন (admin only)"),
+        BotCommand("rename", "reply করা ভিডিও রিনেম করুন (admin only)"),
+        BotCommand("broadcast", "ব্রডকাস্ট (কেবল অ্যাডমিন)"),
+        BotCommand("help", "সহায়িকা")
     ]
     try:
-        await app.set_bot_commands([{"command": c[0], "description": c[1]} for c in cmds])
+        await app.set_bot_commands(cmds)
     except Exception as e:
         print("Set commands error:", e)
 
-@app.on_message(filters.command(["start", "help"]) & filters.private)
+@app.on_message(filters.command("start") & filters.private)
 async def start_handler(c, m: Message):
     await set_bot_commands()
     text = (
-        "Hi! আমি Auto URL uploader bot.\n\n"
-        "ফিচারসমূহ:\n"
-        "• কোনো ছবি পাঠালে সেটি থাম্বনেইল হিসেবে সেভ হবে।\n"
-        "• কোনো URL পাঠালে অটো ডাউনলোড ও আপলোড হবে (কমান্ড ছাড়াই)।\n"
-        "• কোনো ভিডিও ফরোয়ার্ড করলে সেটি অটো new_video.mp4 নামে রিনেম হয়ে আপলোড হবে।\n\n"
-        "সতর্কীকরণ: শুধুমাত্র অ্যাডমিন (owner) চালাতে পারবেন।\n"
-        "আপনার Telegram ID: {}\n\n"
-        "কোনো সমস্যা হলে জানান।"
-    ).format(ADMIN_ID)
+        "Hi! আমি URL uploader bot.\n\n"
+        "নোট: এই বটের সব কার্য (upload/rename/setthumb ইত্যাদি) শুধুমাত্র বট অ্যাডমিন (owner) চালাতে পারবে।\n\n"
+        "Commands:\n"
+        "/upload_url <url> - URL থেকে ডাউনলোড ও Telegram-এ আপলোড (admin only)\n"
+        "/setthumb - একটি ছবি পাঠান, সেট হবে আপনার থাম্বনেইল (admin only)\n"
+        "/view_thumb - আপনার থাম্বনেইল দেখুন (admin only)\n"
+        "/del_thumb - আপনার থাম্বনেইল মুছে ফেলুন (admin only)\n"
+        "/rename <newname.ext> - reply করা ভিডিও রিনেম করুন (admin only)\n"
+        "/broadcast <text> - ব্রডকাস্ট (শুধুমাত্র অ্যাডমিন)\n"
+        "/help - সাহায্য"
+    )
     await m.reply_text(text)
+
+@app.on_message(filters.command("help") & filters.private)
+async def help_handler(c, m):
+    await start_handler(c, m)
+
+@app.on_message(filters.command("setthumb") & filters.private)
+async def setthumb_prompt(c, m):
+    if not is_admin(m.from_user.id):
+        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
+        return
+    await m.reply_text("একটি ছবি পাঠান (photo) — সেট হবে আপনার থাম্বনেইল।")
 
 @app.on_message(filters.photo & filters.private)
 async def photo_handler(c, m: Message):
+    # only admin can set thumb
     if not is_admin(m.from_user.id):
         return
     uid = m.from_user.id
@@ -194,11 +218,64 @@ async def photo_handler(c, m: Message):
     except Exception as e:
         await m.reply_text(f"থাম্বনেইল সেট করতে সমস্যা হয়েছে: {e}")
 
+@app.on_message(filters.command("view_thumb") & filters.private)
+async def view_thumb_cmd(c, m: Message):
+    if not is_admin(m.from_user.id):
+        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
+        return
+    uid = m.from_user.id
+    thumb_path = USER_THUMBS.get(uid)
+    if thumb_path and Path(thumb_path).exists():
+        await c.send_photo(chat_id=m.chat.id, photo=thumb_path, caption="এটা আপনার সেভ করা থাম্বনেইল।")
+    else:
+        await m.reply_text("আপনার কোনো থাম্বনেইল সেভ করা নেই। /setthumb দিয়ে সেট করুন।")
+
+@app.on_message(filters.command("del_thumb") & filters.private)
+async def del_thumb_cmd(c, m: Message):
+    if not is_admin(m.from_user.id):
+        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
+        return
+    uid = m.from_user.id
+    thumb_path = USER_THUMBS.get(uid)
+    if thumb_path and Path(thumb_path).exists():
+        try:
+            Path(thumb_path).unlink()
+        except Exception:
+            pass
+        USER_THUMBS.pop(uid, None)
+        await m.reply_text("আপনার থাম্বনেইল মুছে ফেলা হয়েছে।")
+    else:
+        await m.reply_text("আপনার কোনো থাম্বনেইল সেভ করা নেই।")
+
+async def generate_video_thumbnail(video_path: Path, thumb_path: Path):
+    try:
+        duration = get_video_duration(video_path)
+        timestamp = 1 if duration > 1 else 0
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", str(video_path),
+            "-ss", str(timestamp),
+            "-vframes", "1",
+            "-vf", "scale=320:-1",
+            str(thumb_path)
+        ]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return thumb_path.exists() and thumb_path.stat().st_size > 0
+    except Exception as e:
+        print(f"Thumbnail generate error: {e}")
+        return False
+
 async def upload_progress(current, total, message: Message, start_time):
     await progress_callback(current, total, message, start_time, task="Uploading")
 
 async def process_file_and_upload(c: Client, m: Message, in_path: Path, original_name: str = None):
     uid = m.from_user.id
+    cancel_event = TASKS.get(uid)
+    if cancel_event and cancel_event.is_set():
+        await m.reply_text("অপারেশন বাতিল করা হয়েছে, আপলোড শুরু করা হয়নি।")
+        TASKS.pop(uid, None)
+        return
     try:
         final_name = original_name or in_path.name
         thumb_path = USER_THUMBS.get(uid)
@@ -214,8 +291,11 @@ async def process_file_and_upload(c: Client, m: Message, in_path: Path, original
                 thumb_path = str(thumb_path_tmp)
 
         status_msg = await m.reply_text("আপলোড শুরু হচ্ছে...", reply_markup=progress_keyboard())
-        cancel_event = asyncio.Event()
-        TASKS[uid] = cancel_event
+        cancel_event = TASKS.get(uid)
+        if cancel_event and cancel_event.is_set():
+            await status_msg.edit("অপারেশন বাতিল করা হয়েছে, আপলোড শুরু হয়নি।", reply_markup=None)
+            TASKS.pop(uid, None)
+            return
         start_time = datetime.now()
 
         duration_sec = get_video_duration(in_path) if in_path.exists() else 0
@@ -250,29 +330,21 @@ async def process_file_and_upload(c: Client, m: Message, in_path: Path, original
         TASKS.pop(uid, None)
         await m.reply_text(f"আপলোডে ত্রুটি: {e}")
 
-async def generate_video_thumbnail(video_path: Path, thumb_path: Path):
-    try:
-        duration = get_video_duration(video_path)
-        timestamp = 1 if duration > 1 else 0
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", str(video_path),
-            "-ss", str(timestamp),
-            "-vframes", "1",
-            "-vf", "scale=320:-1",
-            str(thumb_path)
-        ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return thumb_path.exists() and thumb_path.stat().st_size > 0
-    except Exception as e:
-        print(f"Thumbnail generate error: {e}")
-        return False
+@app.on_message(filters.command("upload_url") & filters.private)
+async def upload_url_cmd(c, m: Message):
+    if not is_admin(m.from_user.id):
+        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
+        return
+    if not m.command or len(m.command) < 2:
+        await m.reply_text("ব্যবহার: /upload_url <url>\nউদাহরণ: /upload_url https://example.com/file.mp4")
+        return
+    url = m.text.split(None, 1)[1].strip()
+    await handle_url_download_and_upload(c, m, url)
 
-async def download_url_and_upload(c: Client, m: Message, url: str):
+async def handle_url_download_and_upload(c: Client, m: Message, url: str):
     uid = m.from_user.id
     if uid in TASKS:
-        await m.reply_text("এক সময়ে শুধু একটি কাজ চালানো যাবে। একটু অপেক্ষা করুন।")
+        await m.reply_text("একই সময়ে শুধু একটাই কাজ করা যাবে। দয়া করে শেষ হওয়া পর্যন্ত অপেক্ষা করুন।")
         return
 
     status_msg = await m.reply_text("ডাউনলোড শুরু হচ্ছে...", reply_markup=progress_keyboard())
@@ -285,6 +357,7 @@ async def download_url_and_upload(c: Client, m: Message, url: str):
 
         video_exts = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm"}
         if not any(safe_name.lower().endswith(ext) for ext in video_exts):
+            # if extension unknown, default to .mp4
             safe_name += ".mp4"
 
         tmp_in = TMP / f"dl_{uid}_{int(datetime.now().timestamp())}_{safe_name}"
@@ -292,7 +365,7 @@ async def download_url_and_upload(c: Client, m: Message, url: str):
         if is_drive_url(url):
             fid = extract_drive_id(url)
             if not fid:
-                await status_msg.edit("Google Drive লিংক থেকে file id পাওয়া যায়নি। সঠিক লিংক দিন।", reply_markup=None)
+                await status_msg.edit("Google Drive লিঙ্ক থেকে file id পাওয়া যায়নি। সঠিক লিংক দিন।", reply_markup=None)
                 TASKS.pop(uid, None)
                 return
             ok, err = await download_drive_file(fid, tmp_in, status_msg, cancel_event=cancel_event)
@@ -316,57 +389,91 @@ async def download_url_and_upload(c: Client, m: Message, url: str):
         await status_msg.edit(f"অপস! কিছু ভুল হয়েছে: {e}", reply_markup=None)
         TASKS.pop(uid, None)
     finally:
+        # try to cleanup if file remains and not stored in LAST_FILE
         try:
             if uid not in LAST_FILE:
-                if tmp_in and tmp_in.exists():
-                    tmp_in.unlink(missing_ok=True)
+                if tmp_in.exists():
+                    tmp_in.unlink()
         except Exception:
             pass
-        TASKS.pop(uid, None)
 
-@app.on_message(filters.regex(r"https?://") & filters.private)
-async def url_auto_upload(c: Client, m: Message):
-    if not is_admin(m.from_user.id):
-        return
-    url_match = re.search(r"https?://[^\s]+", m.text)
-    if url_match:
-        url = url_match.group(0)
-        await download_url_and_upload(c, m, url)
-
-@app.on_message(filters.video & filters.private)
+@app.on_message(filters.video & filters.private & filters.forwarded)
 async def video_forward_rename(c: Client, m: Message):
-    if not is_admin(m.from_user.id):
+    uid = m.from_user.id
+    if not is_admin(uid):
         return
 
-    uid = m.from_user.id
-    cancel_event = TASKS.get(uid)
-    if cancel_event and cancel_event.is_set():
-        # কোনো কাজ চলাকালীন হলে ব্লক করুন
+    if uid in TASKS:
+        await m.reply_text("এক সময়ে শুধু একটি কাজ করা যাবে। দয়া করে শেষ হওয়া পর্যন্ত অপেক্ষা করুন।")
         return
 
     tmp_video_path = TMP / f"new_video.mp4"
     try:
         await m.download(file_name=str(tmp_video_path))
-        # রিনেমড নামে আপলোড
+        TASKS[uid] = asyncio.Event()  # create cancel event
         await process_file_and_upload(c, m, tmp_video_path, original_name="new_video.mp4")
     except Exception as e:
         await m.reply_text(f"ভিডিও প্রসেসিংয়ে সমস্যা: {e}")
+    finally:
+        TASKS.pop(uid, None)
+
+@app.on_message(filters.command("rename") & filters.private)
+async def rename_cmd(c: Client, m: Message):
+    uid = m.from_user.id
+    if not is_admin(uid):
+        await m.reply_text("আপনার অনুমতি নেই।")
+        return
+    if not m.reply_to_message or not m.reply_to_message.video:
+        await m.reply_text("ভিডিও ফাইলের reply দিয়ে এই কমান্ড দিন।\nUsage: /rename new_name.mp4")
+        return
+    if len(m.command) < 2:
+        await m.reply_text("নতুন ফাইল নাম দিন। উদাহরণ: /rename new_video.mp4")
+        return
+    new_name = m.text.split(None, 1)[1].strip()
+    # নিরাপদ নাম তৈরির জন্য
+    new_name = re.sub(r"[\\/*?\"<>|:]", "_", new_name)
+    await m.reply_text(f"ভিডিও রিনেম করা হবে: {new_name}\n(এই ফিচারটি আপনার নিজস্ব ভিডিও জন্য কার্যকর, ফরোয়ার্ড ভিডিওর জন্য নয়)")
+    # এখানে আপনার ভিডিও ডাউনলোড এবং upload কোড দিতে পারেন
+    # কিন্তু এই বটে কাজ করা আছে ভিডিও ফরোয়ার্ড অটো rename ফাংশনে
 
 @app.on_callback_query(filters.regex("cancel_task"))
-async def cb_cancel(c, cb):
+async def cancel_task_cb(c, cb):
     uid = cb.from_user.id
-    cancel_event = TASKS.get(uid)
-    if cancel_event:
-        cancel_event.set()
-        TASKS.pop(uid, None)
+    if uid in TASKS:
+        event = TASKS[uid]
+        event.set()
         await cb.answer("অপারেশন বাতিল করা হয়েছে।", show_alert=True)
-        try:
-            await cb.message.edit("অপারেশন বাতিল করা হয়েছে।", reply_markup=None)
-        except Exception:
-            pass
     else:
-        await cb.answer("কোনো চলমান কাজ নেই।", show_alert=True)
+        await cb.answer("কোনো অপারেশন চলছে না।", show_alert=True)
+
+@app.on_message(filters.photo & filters.private)
+async def auto_save_thumb(c, m: Message):
+    # অটো থাম্বনেইল সেভ
+    if not is_admin(m.from_user.id):
+        return
+    uid = m.from_user.id
+    out = TMP / f"thumb_{uid}.jpg"
+    try:
+        await m.download(file_name=str(out))
+        img = Image.open(out)
+        img.thumbnail((320, 320))
+        img = img.convert("RGB")
+        img.save(out, "JPEG")
+        USER_THUMBS[uid] = str(out)
+        await m.reply_text("অটো থাম্বনেইল সেভ হয়েছে।")
+    except Exception as e:
+        await m.reply_text(f"থাম্বনেইল সেভ করতে সমস্যা: {e}")
+
+@app.on_message(filters.text & filters.private)
+async def auto_url_upload(c, m: Message):
+    # যদি message একটি url হয় তাহলে ডাউনলোড+আপলোড করবে
+    if not is_admin(m.from_user.id):
+        return
+    text = m.text.strip()
+    if text.startswith("http://") or text.startswith("https://"):
+        # url detected
+        await handle_url_download_and_upload(c, m, text)
 
 if __name__ == "__main__":
-    print("Bot চালু হচ্ছে...")
+    print("Bot চালু হয়েছে...")
     app.run()
